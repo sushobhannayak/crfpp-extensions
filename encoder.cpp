@@ -92,6 +92,34 @@ class CRFEncoderThread: public thread {
   }
 };
 
+class CRFEncoderHogwildThread: public thread {
+ public:
+  TaggerImpl **x;
+  class alphaWrapper {
+  public:
+    double *alpha_;
+    ~alphaWrapper() {
+      alpha_ = 0;
+    }
+  } aw;
+  unsigned short start_i;
+  unsigned short thread_num;
+  size_t size;
+  std::vector<double> expected;
+  float C;
+
+  void run() {
+    for (size_t i = start_i; i < size; i += thread_num) {
+      std::fill(expected.begin(), expected.end(), 0.0);
+      x[i]->gradient(&expected[0]);
+      for (size_t k = 0; k < expected.size(); ++k) {
+        expected[k] += aw.alpha_[k] / (C * size);
+	aw.alpha_[k] -= 0.01 * expected[k];
+      }
+    }
+  }
+};
+
 bool runMIRA(const std::vector<TaggerImpl* > &x,
              EncoderFeatureIndex *feature_index,
              double *alpha,
@@ -286,6 +314,67 @@ bool runCRF(const std::vector<TaggerImpl* > &x,
   return true;
 }
 
+bool runHogwildCRF(const std::vector<TaggerImpl* > &x,
+            EncoderFeatureIndex *feature_index,
+            double *alpha,
+            size_t maxitr,
+            float C,
+            double eta,
+            unsigned short shrinking_size,
+            unsigned short thread_num,
+            bool orthant) {
+  int converge = 0;
+  std::vector<CRFEncoderHogwildThread> thread(thread_num);
+  double old_weight = 0.0;
+  double new_weight = 0.0;
+  for (size_t i = 0; i < thread_num; i++) {
+    std::cout << "Initiating hogwild thread..." << std::flush;
+    thread[i].start_i = i;
+    thread[i].size = x.size();
+    thread[i].thread_num = thread_num;
+    thread[i].x = const_cast<TaggerImpl **>(&x[0]);
+    thread[i].expected.resize(feature_index->size());
+    thread[i].aw.alpha_ = alpha;
+    thread[i].C = C;
+  }
+
+  for (size_t itr = 0; itr < 20; ++itr) {
+
+    for (size_t i = 0; i < thread_num; ++i) {
+      thread[i].start();
+    }
+
+    for (size_t i = 0; i < thread_num; ++i) {
+      thread[i].join();
+    }
+    
+    new_weight = 0.0;
+    for (size_t k = 0; k < feature_index->size(); ++k) {
+      new_weight += std::abs(alpha[k]);
+    }
+
+    double diff = (itr == 0 ? 1.0 :
+                   std::abs(old_weight - new_weight));
+    std::cout << "iter="  << itr
+              << " old_weight=" << old_weight
+              << " new_weight=" << new_weight
+              << " diff="  << diff << std::endl;
+    old_weight = new_weight;
+
+    if (diff < eta) {
+      converge++;
+    } else {
+      converge = 0;
+    }
+
+    if (itr > maxitr || converge == 3) {
+      break;  // 3 is ad-hoc
+    }
+  }
+
+  return true;
+}
+
 bool runSGDCRF(const std::vector<TaggerImpl* > &x,
             EncoderFeatureIndex *feature_index,
             double *alpha,
@@ -329,7 +418,7 @@ bool runSGDCRF(const std::vector<TaggerImpl* > &x,
         obj += (alpha[k] * alpha[k] /(2.0 * C * x.size()));
         expected[k] += alpha[k] / (C * x.size());
 	old_weight += std::abs(alpha[k]);
-	alpha[k] -= 0.1 * expected[k];
+	alpha[k] -= 0.01 * expected[k];
 	new_weight += std::abs(alpha[k]);
       }
       old_obj = obj;
@@ -572,6 +661,18 @@ bool Encoder::learn(const char *templfile,
         WHAT_ERROR("CRF_SGD execute error");
       }
       break;
+    case CRF_HOGWILD:
+      if (!runHogwildCRF(x, &feature_index, &alpha[0],
+                  maxitr, C, eta, shrinking_size, thread_num, false)) {
+        WHAT_ERROR("CRF_HOGWILD execute error");
+      }
+      std::cout << "Running LBFGS now for faster convergence..." << std::endl;
+      if (!runCRF(x, &feature_index, &alpha[0],
+                  maxitr, C, eta, shrinking_size, thread_num, false)) {
+        WHAT_ERROR("CRF_L2 execute error");
+      }
+
+      break;
     case CRF_BATCH:
       if (!runBatchSGDCRF(x, &feature_index, &alpha[0],
                   maxitr, C, eta, shrinking_size, thread_num, false)) {
@@ -674,6 +775,8 @@ int crfpp_learn(const Param &param) {
     algorithm = CRFPP::Encoder::CRF_SGD;
   } else if (salgo == "crf-batch") {
     algorithm = CRFPP::Encoder::CRF_BATCH;
+  } else if (salgo == "crf-hogwild") {
+    algorithm = CRFPP::Encoder::CRF_HOGWILD;
   } else {
     std::cerr << "unknown alogrithm: " << salgo << std::endl;
     return -1;

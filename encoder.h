@@ -13,7 +13,7 @@
 namespace CRFPP {
 class Encoder {
  public:
-  enum { CRF_L2, CRF_L1, MIRA, CRF_SGD, CRF_BATCH };
+  enum { CRF_L2, CRF_L1, MIRA, CRF_SGD, CRF_BATCH, CRF_HOGWILD };
   bool learn(const char *, const char *,
              const char *,
              bool, size_t, size_t,
