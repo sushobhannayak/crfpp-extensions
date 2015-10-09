@@ -107,6 +107,7 @@ class CRFEncoderHogwildThread: public thread {
   size_t size;
   std::vector<double> expected;
   float C;
+  float gamma;
 
   void run() {
     for (size_t i = start_i; i < size; i += thread_num) {
@@ -114,11 +115,29 @@ class CRFEncoderHogwildThread: public thread {
       x[i]->gradient(&expected[0]);
       for (size_t k = 0; k < expected.size(); ++k) {
         expected[k] += aw.alpha_[k] / (C * size);
-	aw.alpha_[k] -= 0.01 * expected[k];
+	aw.alpha_[k] -= gamma * expected[k];
       }
     }
   }
 };
+
+double sampleObjective(const std::vector<TaggerImpl* &x>, 
+		       double size,
+		       double *alpha, 
+		       float C) {
+  size_t sample_size = x.size() * 0.4;
+  double obj = 0.0;
+  std::vector<double> expected(size);
+  std::fill(expected.begin(), expected.end(), 0.0);
+  for (size_t i = 0; i < sample_size; ++i) {
+    size_t idx = (int)((double)rand()*x.size()/RAND_MAX);
+    obj += x[idx]->gradient(&expected[0]);
+  }
+  obj /= sample_size;
+  for (size_t k = 0; k < size; ++k)
+    obj += alpha[k] * alpha[k] / (2.0 * C * x.size());
+  return obj;
+}
 
 bool runMIRA(const std::vector<TaggerImpl* > &x,
              EncoderFeatureIndex *feature_index,
@@ -320,6 +339,7 @@ bool runHogwildCRF(const std::vector<TaggerImpl* > &x,
             size_t maxitr,
             float C,
             double eta,
+	    double gamma,
             unsigned short shrinking_size,
             unsigned short thread_num,
             bool orthant) {
@@ -328,7 +348,6 @@ bool runHogwildCRF(const std::vector<TaggerImpl* > &x,
   double old_weight = 0.0;
   double new_weight = 0.0;
   for (size_t i = 0; i < thread_num; i++) {
-    std::cout << "Initiating hogwild thread..." << std::flush;
     thread[i].start_i = i;
     thread[i].size = x.size();
     thread[i].thread_num = thread_num;
@@ -336,9 +355,10 @@ bool runHogwildCRF(const std::vector<TaggerImpl* > &x,
     thread[i].expected.resize(feature_index->size());
     thread[i].aw.alpha_ = alpha;
     thread[i].C = C;
+    thread[i].gamma = gamma;
   }
 
-  for (size_t itr = 0; itr < 20; ++itr) {
+  for (size_t itr = 0; itr < maxitr; ++itr) {
 
     for (size_t i = 0; i < thread_num; ++i) {
       thread[i].start();
@@ -381,6 +401,7 @@ bool runSGDCRF(const std::vector<TaggerImpl* > &x,
             size_t maxitr,
             float C,
             double eta,
+            double gamma,
             unsigned short shrinking_size,
             unsigned short thread_num,
             bool orthant) {
@@ -418,7 +439,7 @@ bool runSGDCRF(const std::vector<TaggerImpl* > &x,
         obj += (alpha[k] * alpha[k] /(2.0 * C * x.size()));
         expected[k] += alpha[k] / (C * x.size());
 	old_weight += std::abs(alpha[k]);
-	alpha[k] -= 0.01 * expected[k];
+	alpha[k] -= gamma * expected[k];
 	new_weight += std::abs(alpha[k]);
       }
       old_obj = obj;
@@ -458,8 +479,10 @@ bool runBatchSGDCRF(const std::vector<TaggerImpl* > &x,
             EncoderFeatureIndex *feature_index,
             double *alpha,
             size_t maxitr,
+            size_t batch,
             float C,
             double eta,
+            double gamma,
             unsigned short shrinking_size,
             unsigned short thread_num,
             bool orthant) {
@@ -477,7 +500,7 @@ bool runBatchSGDCRF(const std::vector<TaggerImpl* > &x,
   bool stop = false;
   double old_global_obj = 1e+37;;
   double new_global_obj = 0.0;
-  for (size_t itr = 0; itr < 5; ++itr) {
+  for (size_t itr = 0; itr < maxitr; ++itr) {
     if (stop) break;
     std::vector<int> order(x.size());
     for (size_t i = 0; i < x.size(); ++i) order[i] = i;
@@ -495,14 +518,14 @@ bool runBatchSGDCRF(const std::vector<TaggerImpl* > &x,
       obj += x[i]->gradient(&expected[0]);
 
       for (size_t k = 0; k < feature_index->size(); ++k) {
-        obj += (alpha[k] * alpha[k] * 20 /(2.0 * C * x.size()));
-        expected[k] += alpha[k] * 20 / (C * x.size());
+        obj += (alpha[k] * alpha[k] * batch /(2.0 * C * x.size()));
+        expected[k] += alpha[k] * batch / (C * x.size());
       }
       
-      if (!(count % 20) || count >= feature_index->size()) {
+      if (!(count % batch) || count >= feature_index->size()) {
 	for (size_t k = 0; k < feature_index->size(); ++k) {
 	  old_weight += std::abs(alpha[k]);
-	  alpha[k] -= 0.01 * expected[k];
+	  alpha[k] -= gamma * expected[k];
 	  new_weight += std::abs(alpha[k]);
 	}
 	std::fill(expected.begin(), expected.end(), 0.0);
@@ -557,9 +580,13 @@ bool Encoder::learn(const char *templfile,
                     const char *trainfile,
                     const char *modelfile,
                     bool textmodelfile,
+                    bool l1,
                     size_t maxitr,
+		    size_t batch,
+                    size_t runbfgs,
                     size_t freq,
                     double eta,
+                    double gamma,
                     double C,
                     unsigned short thread_num,
                     unsigned short shrinking_size,
@@ -567,6 +594,9 @@ bool Encoder::learn(const char *templfile,
   std::cout << COPYRIGHT << std::endl;
 
   CHECK_FALSE(eta > 0.0) << "eta must be > 0.0";
+  CHECK_FALSE(batch > 0.0) << "batch must be > 0.0";
+  CHECK_FALSE(runbfgs >= 0.0) << "runbfgs must be >= 0.0";
+  CHECK_FALSE(gamma > 0.0) << "gamma must be > 0.0";
   CHECK_FALSE(C >= 0.0) << "C must be >= 0.0";
   CHECK_FALSE(shrinking_size >= 1) << "shrinking-size must be >= 1";
   CHECK_FALSE(thread_num > 0) << "thread must be > 0";
@@ -642,7 +672,9 @@ bool Encoder::learn(const char *templfile,
   std::cout << "Number of thread(s): " << thread_num << std::endl;
   std::cout << "Freq:                " << freq << std::endl;
   std::cout << "eta:                 " << eta << std::endl;
+  std::cout << "gamma:               " << gamma << std::endl;
   std::cout << "C:                   " << C << std::endl;
+  std::cout << "batch size:          " << batch << std::endl;
   std::cout << "shrinking size:      " << shrinking_size
             << std::endl;
 
@@ -657,36 +689,47 @@ bool Encoder::learn(const char *templfile,
       break;
     case CRF_SGD:
       if (!runSGDCRF(x, &feature_index, &alpha[0],
-                  maxitr, C, eta, shrinking_size, thread_num, false)) {
+		     runbfgs ? runbfgs : maxitr, C, eta, gamma, shrinking_size, thread_num, l1)) {
         WHAT_ERROR("CRF_SGD execute error");
+      }
+      if (runbfgs) {
+	std::cout << "Running LBFGS now for faster convergence..." << std::endl;
+	if (!runCRF(x, &feature_index, &alpha[0],
+		    maxitr, C, eta, shrinking_size, thread_num, l1)) {
+	  WHAT_ERROR("CRF_L2 execute error");
+	}
       }
       break;
     case CRF_HOGWILD:
       if (!runHogwildCRF(x, &feature_index, &alpha[0],
-                  maxitr, C, eta, shrinking_size, thread_num, false)) {
+			 runbfgs ? runbfgs : maxitr, C, eta, gamma, shrinking_size, thread_num, l1)) {
         WHAT_ERROR("CRF_HOGWILD execute error");
       }
-      std::cout << "Running LBFGS now for faster convergence..." << std::endl;
-      if (!runCRF(x, &feature_index, &alpha[0],
-                  maxitr, C, eta, shrinking_size, thread_num, false)) {
-        WHAT_ERROR("CRF_L2 execute error");
+      if (runbfgs) {
+	std::cout << "Running LBFGS now for faster convergence..." << std::endl;
+	if (!runCRF(x, &feature_index, &alpha[0],
+		    maxitr, C, eta, shrinking_size, thread_num, l1)) {
+	  WHAT_ERROR("CRF_L2 execute error");
+	}
       }
-
       break;
     case CRF_BATCH:
       if (!runBatchSGDCRF(x, &feature_index, &alpha[0],
-                  maxitr, C, eta, shrinking_size, thread_num, false)) {
+			  runbfgs ? runbfgs : maxitr, batch, 
+			  C, eta, gamma, shrinking_size, thread_num, l1)) {
         WHAT_ERROR("CRF_BATCH execute error");
       }
-      std::cout << "Running LBFGS now for faster convergence..." << std::endl;
-      if (!runCRF(x, &feature_index, &alpha[0],
-                  maxitr, C, eta, shrinking_size, thread_num, false)) {
-        WHAT_ERROR("CRF_L2 execute error");
+      if (runbfgs) {
+	std::cout << "Running LBFGS now for faster convergence..." << std::endl;
+	if (!runCRF(x, &feature_index, &alpha[0],
+		    maxitr, C, eta, shrinking_size, thread_num, l1)) {
+	  WHAT_ERROR("CRF_L2 execute error");
+	}
       }
       break;
     case CRF_L2:
       if (!runCRF(x, &feature_index, &alpha[0],
-                  maxitr, C, eta, shrinking_size, thread_num, false)) {
+                  maxitr, C, eta, shrinking_size, thread_num, l1)) {
         WHAT_ERROR("CRF_L2 execute error");
       }
       break;
@@ -716,17 +759,25 @@ namespace {
 const CRFPP::Option long_options[] = {
   {"freq",     'f', "1",      "INT",
    "use features that occuer no less than INT(default 1)" },
-  {"maxiter" , 'm', "100000", "INT",
+  {"maxiter" , 'm', "10000", "INT",
    "set INT for max iterations in LBFGS routine(default 10k)" },
+  {"runbfgs" , 'r', "0", "INT",
+   "set INT for max iterations in current routine after which CRF-L2 is run(default false)" },
+  {"batch" , 'b', "20", "INT",
+   "set INT for batch size for batch SGD(default 20)" },
   {"cost",     'c', "1.0",    "FLOAT",
    "set FLOAT for cost parameter(default 1.0)" },
   {"eta",      'e', "0.0001", "FLOAT",
    "set FLOAT for termination criterion(default 0.0001)" },
+  {"gamma",      'g', "0.01", "FLOAT",
+   "set FLOAT for learning rate(default 0.01)" },
   {"convert",  'C',  0,       0,
    "convert text model to binary model" },
+  {"l1",  'l',  0,       0,
+   "use l1 regularization" },
   {"textmodel", 't', 0,       0,
    "build also text model file for debugging" },
-  {"algorithm",  'a', "CRF",   "(CRF|MIRA)", "select training algorithm" },
+  {"algorithm",  'a', "CRF",   "(CRF-L1|CRF-L2|CRF-SGD|CRF-BATCH|CRF-HOGWILD|MIRA|)", "select training algorithm" },
   {"thread", 'p',   "0",       "INT",
    "number of threads (default auto-detect)" },
   {"shrinking-size", 'H', "20", "INT",
@@ -743,6 +794,7 @@ int crfpp_learn(const Param &param) {
   }
 
   const bool convert = param.get<bool>("convert");
+  bool l1 = param.get<bool>("l1");
 
   const std::vector<std::string> &rest = param.rest_args();
   if (param.get<bool>("help") ||
@@ -753,8 +805,11 @@ int crfpp_learn(const Param &param) {
 
   const size_t         freq           = param.get<int>("freq");
   const size_t         maxiter        = param.get<int>("maxiter");
+  const size_t         runbfgs        = param.get<int>("runbfgs");
+  const size_t         batch          = param.get<int>("batch");
   const double         C              = param.get<float>("cost");
   const double         eta            = param.get<float>("eta");
+  const double         gamma          = param.get<float>("gamma");
   const bool           textmodel      = param.get<bool>("textmodel");
   const unsigned short thread         =
       CRFPP::getThreadSize(param.get<unsigned short>("thread"));
@@ -767,6 +822,7 @@ int crfpp_learn(const Param &param) {
   int algorithm = CRFPP::Encoder::MIRA;
   if (salgo == "crf" || salgo == "crf-l2") {
     algorithm = CRFPP::Encoder::CRF_L2;
+    if (salgo == "crf-l2") l1 = false;
   } else if (salgo == "crf-l1") {
     algorithm = CRFPP::Encoder::CRF_L1;
   } else if (salgo == "mira") {
@@ -792,8 +848,8 @@ int crfpp_learn(const Param &param) {
     if (!encoder.learn(rest[0].c_str(),
                        rest[1].c_str(),
                        rest[2].c_str(),
-                       textmodel,
-                       maxiter, freq, eta, C, thread, shrinking_size,
+                       textmodel, l1,
+                       maxiter, batch, runbfgs, freq, eta, gamma, C, thread, shrinking_size,
                        algorithm)) {
       std::cerr << encoder.what() << std::endl;
       return -1;
