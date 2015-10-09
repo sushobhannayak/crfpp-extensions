@@ -26,6 +26,8 @@
 #include "scoped_ptr.h"
 #include "thread.h"
 
+#define SAMPLE 1000
+
 namespace CRFPP {
 namespace {
 
@@ -121,18 +123,26 @@ class CRFEncoderHogwildThread: public thread {
   }
 };
 
+void populateSampleVector(std::vector<size_t>& sample, size_t size) {
+  size_t sample_size = size * 0.4;
+  for (size_t i = 0; i < sample_size; ++i)
+    sample.push_back((int)((double)rand()*size/RAND_MAX));
+}
+
 double sampleObjective(const std::vector<TaggerImpl* > &x, 
 		       double& old_obj,
-		       double size,
+		       size_t size,
 		       double *alpha, 
-		       float C) {
-  size_t sample_size = x.size() * 0.4;
+		       float C,
+		       std::vector<size_t>& sample) {
+  if (sample.size() == 0) populateSampleVector(sample, x.size());
+  size_t sample_size = sample.size();
   double obj = 0.0;
   int err = 0, zeroone = 0, all = 0;
   std::vector<double> expected(size);
   std::fill(expected.begin(), expected.end(), 0.0);
   for (size_t i = 0; i < sample_size; ++i) {
-    size_t idx = (int)((double)rand()*x.size()/RAND_MAX);
+    size_t idx = sample[i];
     all += x[idx]->size();
     obj += x[idx]->gradient(&expected[0]);
     int error_num = x[idx]->eval();
@@ -144,12 +154,97 @@ double sampleObjective(const std::vector<TaggerImpl* > &x,
     obj += alpha[k] * alpha[k] / (2.0 * C * x.size());
 
   double diff = old_obj == 0 ? 1 : std::abs(old_obj - obj)/old_obj;
-  std::cout   << "terr=" << 1.0 * err / all
+  std::cout   << " terr=" << 1.0 * err / all
               << " serr=" << 1.0 * zeroone / sample_size
               << " obj=" << obj
               << " diff="  << diff << std::endl;
   old_obj = obj;
   return diff;
+}
+
+double tryGammaBySampling(const std::vector<TaggerImpl* > &x,
+			  size_t size,
+			  double *alpha,
+			  float C,
+			  double gamma,
+			  std::vector<size_t>& sample) {
+  // Save previous parameters
+  std::vector<double> savedAlpha(size);
+  for (size_t i = 0; i < size; ++i)
+    savedAlpha[i] = alpha[i];
+
+  std::vector<double> expected(size);
+  for (size_t i = 0; i < sample.size(); ++i) {
+    std::fill(expected.begin(), expected.end(), 0.0);
+    x[sample[i]]->gradient(&expected[0]);
+    for (size_t k = 0; k < size; ++k) {
+      expected[k] += alpha[k] / (C * sample.size());
+      alpha[k] -= gamma * expected[k];
+    }
+  }
+
+  double obj = 0.0;
+  sampleObjective(x, obj, size, alpha, C, sample);
+
+  // Restore old parameters
+  for (size_t i = 0; i < size; ++i)
+    alpha[i] = savedAlpha[i];
+  
+  return obj;
+}
+
+double findOptimalGamma(const std::vector<TaggerImpl* > &x,
+			size_t size,
+			double *alpha,
+			float C) {
+  std::vector<size_t> sample((x.size() > SAMPLE) ? SAMPLE : x.size());
+  for (size_t i = 0; i < sample.size(); ++i)
+    sample[i] = (int)((double)rand()*x.size()/RAND_MAX);
+  std::cout << "Calibrating gamma using " << sample.size() << " samples...." << std::endl;
+  double sobj = 0.0;
+  sampleObjective(x, sobj, size, alpha, C, sample);
+  std::cout << "Initial objective: " << sobj << std::endl;
+  
+  //Find best gamma, following code here: 
+  //https://github.com/npinto/bottou-sgd/blob/master/crf/crfsgd.cpp
+  double bestgamma = 1;
+  double bestobj = sobj;
+  double sgamma = 0.1;
+  double gamma = sgamma;
+  int totest = 10;
+  double factor = 2;
+  bool phase2 = false;
+  while (totest > 0 || !phase2) {
+    double obj = tryGammaBySampling(x, size, alpha, C, gamma, sample);
+    bool okay = (obj < sobj);
+    std::cout << "trying gamma: " << gamma << " obj: " << obj;
+    if (okay)
+      std::cout << " (possible)" << std::endl;
+    else 
+      std::cout << " (too large)" << std::endl;
+
+    if (okay) {
+      totest -= 1;
+      if (obj < bestobj) {
+	bestobj = obj;
+	bestgamma = gamma;
+      }
+    }
+    if (! phase2) {
+      if (okay)
+	gamma = gamma * factor;
+      else {
+	phase2 = true;
+	gamma = sgamma;
+      }
+    }
+    if (phase2)
+      gamma = gamma / factor;
+  }
+  
+  bestgamma /= factor;
+  std::cout << " taking gamma=" << bestgamma << std::endl << std::endl << std::endl;
+  return bestgamma;
 }
 
 bool runMIRA(const std::vector<TaggerImpl* > &x,
@@ -361,6 +456,9 @@ bool runHogwildCRF(const std::vector<TaggerImpl* > &x,
   double old_obj = 1e+37;
   std::vector<CRFEncoderHogwildThread> thread(thread_num);
 
+  if (gamma <= 0.0)
+    gamma = findOptimalGamma(x, feature_index->size(), alpha, C);
+
   for (size_t i = 0; i < thread_num; i++) {
     thread[i].start_i = i;
     thread[i].size = x.size();
@@ -369,12 +467,12 @@ bool runHogwildCRF(const std::vector<TaggerImpl* > &x,
     thread[i].expected.resize(feature_index->size());
     thread[i].aw.alpha_ = alpha;
     thread[i].C = C;
-    thread[i].gamma = gamma;
   }
 
   for (size_t itr = 0; itr < maxitr; ++itr) {
 
     for (size_t i = 0; i < thread_num; ++i) {
+      thread[i].gamma = gamma / (1 + gamma * (itr*x.size()) / (C*x.size()));
       thread[i].start();
     }
 
@@ -383,7 +481,8 @@ bool runHogwildCRF(const std::vector<TaggerImpl* > &x,
     }
 
     if (!(itr % testintv)) {
-      double diff = sampleObjective(x, old_obj, feature_index->size(), alpha, C);
+      std::vector<size_t> temp;
+      double diff = sampleObjective(x, old_obj, feature_index->size(), alpha, C, temp);
       if (diff < eta) 
 	converge++;
       else
@@ -396,8 +495,8 @@ bool runHogwildCRF(const std::vector<TaggerImpl* > &x,
     double weight = 0.0;
     for (size_t k = 0; k < feature_index->size(); ++k)
       weight += std::abs(alpha[k]);
-    std::cout << "epoch =" << itr 
-	      << " weight = " << weight << std::endl << std::flush;
+    std::cout << "epoch=" << itr 
+	      << " weight=" << weight << std::endl << std::flush;
 
   }
 
@@ -419,26 +518,27 @@ bool runSGDCRF(const std::vector<TaggerImpl* > &x,
   int    converge = 0;
   std::vector<double> expected(feature_index->size());
 
+  if (gamma <= 0.0)
+    gamma = findOptimalGamma(x, feature_index->size(), alpha, C);
   for (size_t itr = 0; itr < maxitr; ++itr) {
     // SGD routine: shuffle dataset
-    std::vector<int> order(x.size());
+    std::vector<size_t> order(x.size());
     for (size_t i = 0; i < x.size(); ++i) order[i] = i;
     std::random_shuffle(order.begin(), order.end());
 
-    for (std::vector<int>::iterator ip = order.begin(); ip < order.end(); ++ip) {
-      int i = *ip;
-
+    for (size_t i = 0; i < order.size(); ++i) {
       std::fill(expected.begin(), expected.end(), 0.0);
-      x[i]->gradient(&expected[0]);
-
+      x[order[i]]->gradient(&expected[0]);
       for (size_t k = 0; k < feature_index->size(); ++k) {
         expected[k] += alpha[k] / (C * x.size());
-	alpha[k] -= gamma * expected[k];
+	double rate = gamma / (1 + gamma * (itr*x.size()+i) / (C*x.size()));
+	alpha[k] -= rate * expected[k];
       }
     }
 
     if (!(itr % testintv)) {
-      double diff = sampleObjective(x, old_obj, feature_index->size(), alpha, C);
+      std::vector<size_t> temp;
+      double diff = sampleObjective(x, old_obj, feature_index->size(), alpha, C, temp);
       if (diff < eta) 
 	converge++;
       else
@@ -473,6 +573,8 @@ bool runBatchSGDCRF(const std::vector<TaggerImpl* > &x,
   double old_obj = 1e+37;
   int    converge = 0;
   std::vector<double> expected(feature_index->size());
+  if (gamma <= 0.0)
+    gamma = findOptimalGamma(x, feature_index->size(), alpha, C);
 
   for (size_t itr = 0; itr < maxitr; ++itr) {
     // Shuffle dataset
@@ -494,14 +596,16 @@ bool runBatchSGDCRF(const std::vector<TaggerImpl* > &x,
       
       if (!(count % batch) || count >= feature_index->size()) {
 	for (size_t k = 0; k < feature_index->size(); ++k) {
-	  alpha[k] -= gamma * expected[k];
+	  double rate = gamma / (1 + gamma * (itr*x.size()+i) / (C*x.size()/batch));
+	  alpha[k] -= rate * expected[k];
 	}
 	std::fill(expected.begin(), expected.end(), 0.0);
       }
     }
 
     if (!(itr % testintv)) {
-      double diff = sampleObjective(x, old_obj, feature_index->size(), alpha, C);
+      std::vector<size_t> temp;
+      double diff = sampleObjective(x, old_obj, feature_index->size(), alpha, C, temp);
       if (diff < eta) 
 	converge++;
       else
@@ -553,10 +657,10 @@ bool Encoder::learn(const char *templfile,
   std::cout << COPYRIGHT << std::endl;
 
   CHECK_FALSE(eta > 0.0) << "eta must be > 0.0";
-  CHECK_FALSE(batch > 0.0) << "batch must be > 0.0";
-  CHECK_FALSE(runbfgs >= 0.0) << "runbfgs must be >= 0.0";
-  CHECK_FALSE(testintv > 0.0) << "testintv must be > 0.0";
-  CHECK_FALSE(gamma > 0.0) << "gamma must be > 0.0";
+  CHECK_FALSE(batch > 0) << "batch must be > 0.0";
+  CHECK_FALSE(runbfgs >= 0) << "runbfgs must be >= 0.0";
+  CHECK_FALSE(testintv > 0) << "testintv must be > 0.0";
+  CHECK_FALSE(gamma >= 0.0) << "gamma must be > 0.0";
   CHECK_FALSE(C >= 0.0) << "C must be >= 0.0";
   CHECK_FALSE(shrinking_size >= 1) << "shrinking-size must be >= 1";
   CHECK_FALSE(thread_num > 0) << "thread must be > 0";
@@ -727,8 +831,8 @@ const CRFPP::Option long_options[] = {
    "set FLOAT for cost parameter(default 1.0)" },
   {"eta",      'e', "0.0001", "FLOAT",
    "set FLOAT for termination criterion(default 0.0001)" },
-  {"gamma",      'g', "0.01", "FLOAT",
-   "set FLOAT for learning rate(default 0.01)" },
+  {"gamma",      'g', "0.0", "FLOAT",
+   "set FLOAT for learning rate(default 0.0)" },
   {"algorithm",  'a', "CRF",   "(CRF-L1|CRF-L2|CRF-SGD|CRF-BATCH|CRF-HOGWILD|MIRA)", 
    "select training algorithm (default CRF-L2)" },
   {"l1",  'l',  0,       0,
