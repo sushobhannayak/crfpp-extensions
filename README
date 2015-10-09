@@ -1,21 +1,21 @@
 see doc/index.html for original documentation. 
 
 Usage: crf_learn [options] files
- -f, --freq=INT                                                      use features that occuer no less than INT(default 1)
- -m, --maxiter=INT                                                   set INT for max iterations in LBFGS routine(default 10k)
- -c, --cost=FLOAT                                                    set FLOAT for cost parameter(default 1.0)
- -e, --eta=FLOAT                                                     set FLOAT for termination criterion(default 0.0001)
- -g, --gamma=FLOAT                                                   set FLOAT for learning rate(default 0.0)
- -a, --algorithm=(CRF-L1|CRF-L2|CRF-SGD|CRF-BATCH|CRF-HOGWILD|MIRA)  select training algorithm (default CRF-L2)
- -l, --l1                                                            use l1 regularization
- -r, --runbfgs=INT                                                   set INT for max iterations in current routine after which CRF-L2 is run(default false)
- -b, --batch=INT                                                     set INT for batch size for batch SGD(default 20)
- -n, --testintv=INT                                                  set INT for epochs between each testing phase SGD(default 5)
- -p, --thread=INT                                                    number of threads (default auto-detect)
- -H, --shrinking-size=INT                                            set INT for number of iterations variable needs to  be optimal before considered for shrinking. (default 20)
- -C, --convert                                                       convert text model to binary model
- -t, --textmodel                                                     build also text model file for debugging
- -v, --version                                                       show the version and exit
- -h, --help                                                          show this help and exit
+ -f, --freq=INT            use features that occuer no less than INT(default 1)
+ -m, --maxiter=INT         set INT for max iterations in LBFGS routine(default 10k)
+ -c, --cost=FLOAT          set FLOAT for cost parameter(default 1.0)
+ -e, --eta=FLOAT           set FLOAT for termination criterion(default 0.0001)
+ -g, --gamma=FLOAT         set FLOAT for learning rate(default 0.0)
+ -a, --algorithm=          select training algorithm (default CRF-L2)
+ -l, --l1                  use l1 regularization
+ -r, --runbfgs=INT         set INT for max iterations in current routine after which CRF-L2 is run(default false)
+ -b, --batch=INT           set INT for batch size for batch SGD(default 20)
+ -n, --testintv=INT        set INT for epochs between each testing phase SGD(default 5)
+ -p, --thread=INT          number of threads (default auto-detect)
+ -H, --shrinking-size=INT  set INT for number of iterations variable needs to  be optimal before considered for shrinking. (default 20)
+ -C, --convert             convert text model to binary model
+ -t, --textmodel           build also text model file for debugging
+ -v, --version             show the version and exit
+ -h, --help                show this help and exit
 
-New options: -g, -a, -l, -r, -b, -n (DESCRIBE these here--)
+New options: -g, -a=(CRF-L1|CRF-L2|CRF-SGD|CRF-BATCH|CRF-HOGWILD|MIRA), -l, -r, -b, -n (DESCRIBE these here--)
