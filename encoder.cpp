@@ -529,10 +529,10 @@ bool runSGDCRF(const std::vector<TaggerImpl* > &x,
     for (size_t i = 0; i < order.size(); ++i) {
       std::fill(expected.begin(), expected.end(), 0.0);
       x[order[i]]->gradient(&expected[0]);
+      double rate = gamma / (1 + gamma * (itr*x.size()+i) / (C*x.size()));
       for (size_t k = 0; k < feature_index->size(); ++k) {
-        expected[k] += alpha[k] / (C * x.size());
-	double rate = gamma / (1 + gamma * (itr*x.size()+i) / (C*x.size()));
-	alpha[k] -= rate * expected[k];
+	if (!expected[k] && !alpha[k]) continue;
+	alpha[k] -= rate * (expected[k] + alpha[k] / (C * x.size()));
       }
     }
 
