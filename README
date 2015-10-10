@@ -1,4 +1,12 @@
-see doc/index.html for original documentation. 
+see doc/index.html for original documentation and installation instructions. 
+
+Installation:
+% ./configure 
+% make
+% su
+# make install
+
+If 'su' doesn't work, try 'sudo su'.
 
 Usage: crf_learn [options] files
  -f, --freq=INT            use features that occuer no less than INT(default 1)
@@ -18,4 +26,25 @@ Usage: crf_learn [options] files
  -v, --version             show the version and exit
  -h, --help                show this help and exit
 
-New options: -g, -a=(CRF-L1|CRF-L2|CRF-SGD|CRF-BATCH|CRF-HOGWILD|MIRA), -l, -r, -b, -n (DESCRIBE these here--)
+New options: -g, -a=(CRF-L1|CRF-L2|CRF-SGD|CRF-BATCH|CRF-HOGWILD|MIRA), -l, -r, -b, -n
+
+Description of options:
+f,freq:	       Disregard binary features that occur less than this threshold in the dataset
+m,maxiter:     Max number of iterations over the dataset. For SGD and its variants, this denotes the number of epochs (since technically each iteration in SGD is over a single example from the dataset). So ideally should set this to 50-100 instead of the default 10k used for LBFGS routine.
+c,cost:	       Regularization parameter
+e,eta:	       Termination criterion. Optimization stops if difference between expected loss is < eta for 2-3 consecutive epochs(SGD)/iterations(LBFGS)
+g,gamma:       Initial learning rate for SGD, which decreases with time
+a,algorithm:   Choose the algorithm to use. 
+	       CRF: LBFGS optimization with L2 regularization by default (-l option chooses L1)
+	       CRF-L1: LBFGS optimization with L1 regularization
+	       CRF-L2: LBFGS optimization with L2 regularization
+	       CRF-SGD: SGD optimization with L2 regularization
+	       CRF-BATCH: Mini batch SGD optimization with L2 regularization
+	       CRF-HOGWILD: Hogwild SGD (parallel version of SGD) optimization with L2 regularization
+l,l1:	       Select L1 regularization. Doesn't work for SGD variants at present
+r,runbfgs:     If you specify this, after r epochs of SGD variant, LBFGS is run for maxiter iterations or till convergence
+b,batch:       Mini-batch sizes for CRF-BATCH
+n,testintv:    After every n epochs of SGD variant, the expected loss is calculated and displayed by sampling a part of the training set. To be used for sanity check.
+p,thread:      Number of threads. Has no effect on CRF-SGD and CRF-BATCH.
+
+

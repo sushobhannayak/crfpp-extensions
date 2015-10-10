@@ -582,7 +582,7 @@ bool runBatchSGDCRF(const std::vector<TaggerImpl* > &x,
     for (size_t i = 0; i < x.size(); ++i) order[i] = i;
     std::random_shuffle(order.begin(), order.end());
 
-    int count = 0;
+    size_t count = 0;
     std::fill(expected.begin(), expected.end(), 0.0);
 
     for (std::vector<int>::iterator ip = order.begin(); ip < order.end(); ++ip) {
@@ -826,7 +826,7 @@ const CRFPP::Option long_options[] = {
   {"freq",     'f', "1",      "INT",
    "use features that occuer no less than INT(default 1)" },
   {"maxiter" , 'm', "10000", "INT",
-   "set INT for max iterations in LBFGS routine(default 10k)" },
+   "set INT for max iterations (default 10k)" },
   {"cost",     'c', "1.0",    "FLOAT",
    "set FLOAT for cost parameter(default 1.0)" },
   {"eta",      'e', "0.0001", "FLOAT",
