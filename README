@@ -58,3 +58,4 @@ n,testintv:    After every n epochs of SGD variant, the expected loss is calcula
 p,thread:      Number of threads. Has no effect on CRF-SGD and CRF-BATCH.
 
 
+Blog post: http://sushobhannayak.github.io/sgd/ml/crf/2015/10/10/crfpp-sgd.html
