@@ -116,6 +116,7 @@ class CRFEncoderHogwildThread: public thread {
       std::fill(expected.begin(), expected.end(), 0.0);
       x[i]->gradient(&expected[0]);
       for (size_t k = 0; k < expected.size(); ++k) {
+	if (!expected[k]) continue; // Update only weights that have a gradient
         expected[k] += aw.alpha_[k] / (C * size);
 	aw.alpha_[k] -= gamma * expected[k];
       }
@@ -472,7 +473,7 @@ bool runHogwildCRF(const std::vector<TaggerImpl* > &x,
   for (size_t itr = 0; itr < maxitr; ++itr) {
 
     for (size_t i = 0; i < thread_num; ++i) {
-      thread[i].gamma = gamma / (1 + gamma * (itr*x.size()) / (C*x.size()));
+      thread[i].gamma = gamma / (1 + gamma * (itr+1) / C);
       thread[i].start();
     }
 
